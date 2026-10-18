@@ -1,6 +1,8 @@
 # Architecture
 
-Proposed Stage 0 design. The modules and schema below are not implemented yet.
+MVP design. Stage 1 implements the package, CLI placeholders, FTS5 environment
+probe, and native build diagnostic. Document processing, storage, embeddings,
+retrieval, and benchmarking below remain planned.
 
 ## Components and data flow
 
@@ -29,8 +31,17 @@ Proposed layout and responsibilities:
 Services accept an embedder interface so deterministic fakes can exercise the
 pipeline without model downloads. CLI code does not contain retrieval logic.
 Use the standard library for CLI, SQLite, hashes, and timing. NumPy supports the
-array boundary and reference tests. Proposed build packaging is scikit-build-core
-with pybind11/CMake; confirm the build dependencies in Stage 1.
+array boundary and reference tests in later stages. Packaging uses scikit-build-core
+with pybind11/CMake and a `src/` layout. CMake requires 3.18+ and C++17; the build
+backend supplies CMake/Ninja when needed. The current extension is
+`researchseek._native`, built from `cpp/bindings.cpp`; `diagnostic()` returns the
+compiler's `__cplusplus` value. No similarity code is implemented yet.
+
+`cli.py` uses argparse, and `__main__.py` supports `python -m researchseek`.
+`diagnostics.py` probes FTS5 using a temporary in-memory table and raises an
+actionable error if unavailable. The package currently has no runtime dependencies;
+pytest is a development extra. Build dependency bounds and test settings live in
+`pyproject.toml`. No automatic native rebuild occurs after C++ edits.
 
 ## Index lifecycle and consistency
 
@@ -134,7 +145,7 @@ local model files. Paragraph windows preserve readable context but require
 explicit token limits and overlap policy. Strict whole-run rollback simplifies
 integrity at the cost of rejecting a run for one malformed file.
 
-Open choices: exact supported toolchain versions and packaging pins (Stage 1),
+Open choices: additional supported toolchain versions (Ubuntu verification pending),
 chunk sizes/overlap and normalization details (Stage 2), resolved model revision
 and cache/offline CLI options (Stage 3), binding copy policy and norm tolerances
 (Stage 4), and evaluation label format/workload sizes (Stage 6). Changes to these

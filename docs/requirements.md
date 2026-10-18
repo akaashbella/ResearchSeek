@@ -1,7 +1,7 @@
 # Requirements
 
-Stage 0 specification. The requirements and CLI examples describe planned behavior;
-none is implemented or measured yet.
+MVP specification. Stage 1 provides package/build diagnostics and CLI help.
+Indexing, search, and benchmark behavior below is not implemented or measured yet.
 
 ## MVP scope
 

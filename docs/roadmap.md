@@ -1,9 +1,10 @@
 # Roadmap
 
-Stage 0 is the current stage. Implementation is pending Stage 1 approval.
+Stage 0 is complete. Stage 1 is implemented and verified on macOS; Ubuntu
+verification is pending. Stage 2 has not started and requires approval.
 Later stages depend on the exit criteria listed below.
 
-## Stage 0 — requirements and design (current)
+## Stage 0 — requirements and design (complete)
 
 - Tasks: inspect the repository; document requirements, architecture, roadmap,
   and project overview; record unresolved choices.
@@ -14,7 +15,7 @@ Later stages depend on the exit criteria listed below.
 
 ## Stage 1 — repository and build foundation
 
-Dependency: Stage 0 and Stage 1 approval.
+Dependency: Stage 0 and Stage 1 approval (both satisfied).
 
 - Tasks: establish Python package layout and pyproject, CMake/pybind11 extension
   scaffold, pytest configuration, ignore rules, and reproducible developer commands.
@@ -24,6 +25,36 @@ Dependency: Stage 0 and Stage 1 approval.
   pytest discovery, missing-FTS5 diagnostics. No retrieval algorithm required yet.
 - Exit: documented build/test commands work on macOS and Ubuntu; record actual
   environments and results. Both platforms must be tested to complete this stage.
+
+### Stage 1 verification — October 17, 2026
+
+Implemented the `src/` package, argparse entry points, C++ diagnostic binding,
+CMake/scikit-build-core configuration, pytest suite, FTS5 probe, ignore rules,
+and development instructions. The CLI commands remain placeholders.
+
+| Check | Actual result |
+| --- | --- |
+| Initial tools | macOS 27.0.1 arm64; Apple Clang 21.0.0; system Python 3.9.6; no CMake/Ninja on PATH |
+| Python provisioning | Python 3.11.17 downloaded into ignored `.tools/python`; `.venv` created with `python3.11 -m venv` |
+| Editable install | `.venv/bin/python -m pip install -v -e '.[dev]'` succeeded; native extension compiled and linked |
+| Build dependencies | scikit-build-core 0.12.2, pybind11 3.1.0, CMake 4.4.4, Ninja 1.13.2 in pip's isolated build environment |
+| Test environment | Python 3.11.17, pip 24.0, pytest 9.1.1, SQLite 3.53.1 |
+| Offline tests | `.venv/bin/python -m pytest -q`: 17 passed, 0 failed |
+| CLI | `.venv/bin/researchseek --help` returned 0; module/subcommand help and invalid usage covered by tests |
+| Native call | Installed `.so` imported; `_native.diagnostic()` returned `201703` (C++17) |
+| FTS5 | In-memory FTS5 table creation succeeded; missing-FTS5 diagnostic tested with a stub |
+| Ubuntu | Not run; no Linux runtime available in this development environment |
+
+The first dependency download failed because network access was restricted; a
+retry with network access succeeded. Python was provisioned locally using a
+temporary uv 0.13.1 bootstrap. No system packages were installed or upgraded.
+The isolated build emitted a nonfatal `lipo` diagnostic while probing Ninja
+(`can't open input file: ninja`). Configuration, compilation, linking, installation,
+and native execution all succeeded. No tests failed.
+
+Stage 1's local functionality is verified. The full exit criterion remains open
+until the documented clean build and tests pass on Ubuntu. Dependency ranges are
+in `pyproject.toml`; the versions above record this run, not a locked environment.
 
 ## Stage 2 — documents, chunks, and SQLite
 

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["scikit-build-core>=0.10,<1", "pybind11>=2.13,<4"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "researchseek"
+version = "0.1.0"
+description = "Local semantic and keyword search over research notes"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+researchseek = "researchseek.cli:main"
+
+[tool.scikit-build]
+minimum-version = "build-system.requires"
+cmake.version = ">=3.18"
+wheel.packages = ["src/researchseek"]
+sdist.exclude = ["AGENTS.md", ".tools", ".venv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
