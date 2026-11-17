@@ -28,8 +28,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     index.add_argument("--overlap", type=_nonnegative_int, default=32)
     index.add_argument("--batch-size", type=_positive_int, default=32)
     index.add_argument("--json", action="store_true", help="Report counts and elapsed seconds as JSON")
+    search = commands.add_parser("search", help="Search indexed passages", description="Search indexed passages.")
+    search.add_argument("query", type=_query_text)
+    search.add_argument("--db", type=Path, default=Path("researchseek.sqlite3"))
+    search.add_argument("--mode", choices=("semantic", "keyword"), default="semantic")
+    search.add_argument("--top-k", type=_positive_int, default=5)
+    search.add_argument("--cache-dir", type=Path, default=Path(".tools/model-cache"))
+    search.add_argument("--json", action="store_true", help="Output a JSON search response")
     for name, summary in (
-        ("search", "Search indexed passages"),
         ("benchmark", "Evaluate retrieval correctness, speed, and quality"),
     ):
         commands.add_parser(
@@ -39,6 +45,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     args = parser.parse_args(argv)
+    if args.command == "search":
+        from researchseek.search import QueryError, search as search_passages
+
+        try:
+            results = search_passages(args.db, args.query, mode=args.mode, top_k=args.top_k,
+                                     cache_dir=args.cache_dir)
+            if args.json:
+                print(json.dumps({"query": args.query, "mode": args.mode, "top_k": args.top_k,
+                                  "results": [asdict(result) for result in results]},
+                                 ensure_ascii=False, allow_nan=False))
+            elif not results:
+                print("No matches.")
+            else:
+                for result in results:
+                    print(f"{result.rank}. {result.path}:{result.start_line}-{result.end_line} "
+                          f"{result.score_type}={result.score:.6f}")
+                    print(result.text)
+                    print()
+            return 0
+        except QueryError as error:
+            parser.error(str(error))
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
+            print(f"researchseek: {error}", file=sys.stderr)
+            return 1
     if args.command == "index":
         started = perf_counter()
         try:
@@ -84,6 +114,12 @@ def _positive_int(value: str) -> int:
     if result < 1:
         raise argparse.ArgumentTypeError("must be positive")
     return result
+
+
+def _query_text(value: str) -> str:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("query must contain non-whitespace text")
+    return value
 
 
 def _nonnegative_int(value: str) -> int:

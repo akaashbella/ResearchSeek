@@ -120,13 +120,23 @@ def _relative_path(path: str) -> None:
 
 
 class Storage:
-    def __init__(self, path: Path | str):
-        self.connection = sqlite3.connect(path, isolation_level=None, timeout=5)
+    def __init__(self, path: Path | str, *, readonly: bool = False):
+        if readonly:
+            location = Path(path).expanduser().resolve()
+            if not location.is_file():
+                raise FileNotFoundError(f"Index database does not exist: {path}")
+            self.connection = sqlite3.connect(location.as_uri() + "?mode=ro", uri=True,
+                                              isolation_level=None, timeout=5)
+            self.connection.execute("PRAGMA query_only = ON")
+        else:
+            self.connection = sqlite3.connect(path, isolation_level=None, timeout=5)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
         try:
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
+                if readonly:
+                    raise ValueError("Database has no ResearchSeek schema; index documents first")
                 if self.connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
                 ).fetchone():

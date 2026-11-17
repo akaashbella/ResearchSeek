@@ -1,10 +1,9 @@
 # Roadmap
 
-Stage 0 is complete. Stage 1 is implemented and verified on macOS; Ubuntu
-verification is pending. Stage 2 foundations are implemented and verified on macOS.
-Stage 3 is implemented and verified on macOS, including cached real-model indexing.
-Stage 4 native retrieval is verified on macOS; its Ubuntu exit criterion remains open.
-Stage 5 has not started and requires approval.
+Stages 0–4 are implemented; their Ubuntu 24.04 CI matrix passed with Python 3.11
+and 3.12, as reported when starting Stage 5. Stage 5 is implemented and verified
+locally on macOS; its GitHub Actions results are pending. Stage 6 has not started
+and requires approval.
 Later stages depend on the exit criteria listed below.
 
 ## Stage 0 — requirements and design (complete)
@@ -241,10 +240,10 @@ native/FTS5 check and CLI help also executed successfully. `actionlint` was not
 installed. The offline suite with the CI model environment flags passed:
 294 tests passed, one opt-in test skipped, zero failures.
 
-GitHub execution is pending. Neither Ubuntu matrix job nor Python 3.12 has been
-verified locally. Both jobs must pass in GitHub Actions before recording Ubuntu
-verification or closing the cross-platform exit criteria. No application behavior
-was changed, and Stage 5 has not started.
+At the start of Stage 5, the maintainer reported successful Ubuntu 24.04 runs on
+Python 3.11 and 3.12. Those runs verify the Stage 4 baseline. No Linux jobs were
+executed from the local macOS environment. Stage 5 changes still require a new
+successful matrix run after they are committed and pushed.
 
 ## Stage 5 — search CLI and keyword baseline
 
@@ -258,6 +257,50 @@ Dependency: Stages 2–4.
 - Exit: documented `index`/`search` examples execute; results include usable source
   citations and labeled scores; offline cached operation and failure diagnostics
   are demonstrated. Ordinary tests remain independent of network/model downloads.
+
+### Stage 5 verification — November 17, 2026
+
+Implemented `search.py`, read-only storage connections, and the semantic/keyword
+search CLI. Added service and CLI tests and extended the cached-model test to
+cover both modes, source citations, JSON, and repeated offline use. Two obsolete
+search-placeholder assertions now check functional help and the required query.
+Indexing, embeddings, chunking, native ranking, schema, and CI configuration are
+unchanged.
+
+Semantic search loads the exact stored immutable revision, compares all model,
+tokenizer, preprocessing/chunker, and package metadata, validates the encoded
+query, and delegates to native top-k. Keyword search uses unicode61 tokenization
+in a separate in-memory FTS5 table, quotes normalized terms, and applies OR/BM25
+ranking without importing the model adapter or native module. Result lookup uses
+the scoring snapshot in both modes. Corpus connections use mode=ro/query_only=ON;
+queries never initialize schema, download artifacts, or repair an index.
+
+| Check | Actual result |
+| --- | --- |
+| Local environment | macOS arm64, Python 3.11.17, SQLite 3.53.1; existing editable/native installation |
+| Ordinary offline suite | `python -m pytest -q` with CI offline/telemetry flags: 372 passed, 1 opt-in test skipped, 0 failed |
+| Complete cached-model suite | `HF_HUB_OFFLINE=1 python -m pytest --real-model -q`: 373 passed, 0 failed; includes all prior cases and 78 new Stage 5 cases |
+| Model test | Pinned all-MiniLM-L6-v2 cache used for real indexing, semantic C++ retrieval, FTS5 retrieval, source spans, JSON, and repeated offline calls; no download |
+| Semantic checks | Query encoding, exact model/revision/metadata compatibility, native delegation, exact ties, top-k, empty corpus, updated/deleted documents, corrupt vectors, and missing native/cache errors passed |
+| Keyword checks | OR terms, literal operators, punctuation/quotes, Unicode/diacritics, no matches, BM25/tie order, and injection resistance passed |
+| Keyword independence | Fresh-process import blocker rejected model/native imports; both the keyword service and CLI succeeded |
+| Read-only checks | Database bytes and mtime unchanged; writes refused on read-only connections; missing files not created; invalid schemas/configuration/metadata rejected |
+| Snapshot checks | Both modes retained pre-commit passage text during a concurrent WAL writer commit |
+| Manual CLI | Five samples indexed into six chunks; semantic/keyword text and JSON searches passed; missing-cache keyword search succeeded, semantic search failed with guidance, and database hash stayed unchanged |
+| Native/help | C++17 diagnostic returned `201703`; search help passed; benchmark remains a placeholder |
+| Build/CI | No rebuild or new dependencies needed for these Python-only changes. Existing Ubuntu workflow is unchanged; Stage 5 GitHub execution is pending |
+
+An initial manual text-output assertion used the unmatched plural `transactions`;
+the verification query was corrected to indexed `rollback`. Literal keyword search
+does not stem words. All final checks passed. No quantitative quality or performance
+comparison was performed.
+
+Stage 5's functional exit criteria are satisfied locally. Search currently loads
+one model per semantic call and holds a read transaction through scoring and
+passage lookup; it uses the existing exhaustive in-memory vector scan. These
+changes have not yet run in GitHub Actions. Stage 6 should define the evaluation
+corpus/labels, metric definitions, reproducible indexing/search workloads, and
+measurement/reporting protocol before implementing the benchmark command.
 
 ## Stage 6 — reproducible evaluation and MVP review
 

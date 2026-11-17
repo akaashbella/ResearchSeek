@@ -1,5 +1,6 @@
 from pathlib import Path
 import shutil
+import json
 
 import numpy as np
 import pytest
@@ -8,10 +9,12 @@ from researchseek.chunking import chunk_text
 from researchseek.embeddings import DEFAULT_MODEL, DEFAULT_REVISION, SentenceTransformerEmbedder
 from researchseek.indexing import index_corpus
 from researchseek.storage import Storage
+from researchseek.search import search
+from researchseek.cli import main
 
 
 @pytest.mark.real_model
-def test_cached_real_model_indexing(tmp_path, monkeypatch):
+def test_cached_real_model_indexing(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("HF_HUB_DISABLE_TELEMETRY", "1")
     embedder = SentenceTransformerEmbedder()
@@ -48,3 +51,18 @@ def test_cached_real_model_indexing(tmp_path, monkeypatch):
     assert changed.updated == changed.deleted == 1 and changed.unchanged == 3
     with Storage(path) as store:
         assert len(store.embeddings()) == changed.chunks
+    for mode in ("semantic", "keyword"):
+        results = search(path, "database transactions", mode=mode)
+        assert results
+        with Storage(path, readonly=True) as store:
+            for result in results:
+                row = store.connection.execute("SELECT * FROM chunks WHERE id=?", (result.chunk_id,)).fetchone()
+                source = (root / result.path).read_text()
+                assert result.text == source[row["start_char"]:row["end_char"]]
+                assert result.start_line == source[:row["start_char"]].count("\n") + 1
+                assert result.end_line == source[:row["end_char"] - 1].count("\n") + 1
+        for _ in range(2):
+            assert main(["search", "database transactions", "--db", str(path), "--mode", mode, "--json"]) == 0
+            response = json.loads(capsys.readouterr().out)
+            assert response["mode"] == mode and response["results"]
+            assert response["results"][0]["chunk_id"] == results[0].chunk_id

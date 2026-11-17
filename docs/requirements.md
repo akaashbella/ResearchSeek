@@ -1,7 +1,7 @@
 # Requirements
 
 MVP specification. Indexing, embeddings, SQLite/FTS5 persistence, and native exact
-vector retrieval are implemented. Public search and benchmark workflows remain planned.
+vector retrieval and both search modes are implemented. Benchmark workflows remain planned.
 
 ## MVP scope
 
@@ -77,7 +77,7 @@ approximate nearest-neighbor indexes, and external vector databases are excluded
 - Keep ordinary tests deterministic and offline. Pin the experiment environment
   and resolved model revision when publishing results.
 
-## Proposed CLI
+## CLI
 
 Default database location is `./researchseek.sqlite3`; `--db` overrides it on each
 command. `index` stores the resolved corpus root; `search` needs only the database.
@@ -90,10 +90,16 @@ researchseek search "regularization dropout" --mode keyword --top-k 5 --json
 researchseek benchmark --db ./researchseek.sqlite3 --queries ./benchmarks/queries.json --output ./results/run.json
 ```
 
+The benchmark example is planned for Stage 6; `index` and `search` are operational.
+
 Semantic search is the default mode and top-k defaults to 5. `--rebuild` explicitly
 replaces the corpus/configuration atomically; changing roots also requires it.
 Indexing supports `--max-tokens` (200), `--overlap` (32), `--batch-size` (32),
 `--model`, `--revision`, `--cache-dir`, and opt-in acquisition via `--download-model`.
+Search supports `--mode` (semantic by default), `--top-k` (5), `--db`, `--cache-dir`,
+and `--json`. It is read-only and never downloads artifacts. JSON has top-level
+`query`, `mode`, `top_k`, and `results`; result fields are rank, chunk_id, path, text,
+start_line, end_line, mode, score, and score_type (`cosine_similarity` or `fts5_bm25`).
 No-match search is successful with an empty result set. Normal success exits 0, operational
 failure exits 1, and invalid CLI usage exits 2. A benchmark output path must not
 silently overwrite an existing report.

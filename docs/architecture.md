@@ -1,8 +1,8 @@
 # Architecture
 
-Stage 4 adds exact native cosine retrieval and a SQLite vector snapshot adapter.
-Stage 3 indexing, discovery, chunking, and persistence remain unchanged. The public
-search service/CLI and benchmarking remain planned; the C++ diagnostic is preserved.
+Stage 5 adds semantic and literal-term keyword search services and the `search`
+CLI. Indexing and native retrieval algorithms are unchanged. Storage adds a
+read-only connection option. Benchmarking remains planned.
 
 ## Components and data flow
 
@@ -13,7 +13,7 @@ search keyword:  CLI -> literal FTS query -> FTS5 BM25 -> fetch passages
 benchmark: fixtures/labels -> shared indexing/search services -> JSON measurements
 ```
 
-Module responsibilities (search and benchmark modules remain planned):
+Module responsibilities (the benchmark module remains planned):
 
 | Location | Responsibility |
 | --- | --- |
@@ -268,8 +268,8 @@ inside that context from the same snapshot. Tests use a WAL database to verify
 that an intervening writer commit does not change either vectors or passage text
 seen by the reader. `retrieve(storage, query, k)` is a convenience wrapper returning
 ranked `(int, float)` pairs; callers needing metadata must use the context manager.
-Neither API encodes a query string or validates its model identity; the future
-search service must use the snapshot configuration to load a compatible embedder.
+Neither low-level API encodes a query string or validates its model identity;
+`search.py` uses the snapshot configuration to load a compatible embedder.
 No persistent native index/cache or silent NumPy fallback is implemented.
 
 NumPy tests independently compute float64 cosine and lexicographically sort all
@@ -283,6 +283,48 @@ UndefinedBehaviorSanitizer under Clang/GCC. A standalone safety executable also
 exercises overflow guards, invalid inputs, and heap boundaries. The test runner
 can load a separate instrumented extension, preserving the regular installation.
 Sanitizer results and platform coverage are recorded in the roadmap.
+
+## Search service and read-only access
+
+`search(database, query, mode='semantic', top_k=5, cache_dir=...)` returns ranked
+`SearchResult` records. A test embedder may be injected for semantic search.
+`Storage(..., readonly=True)` requires an existing file, uses a safely escaped
+SQLite `mode=ro` URI, and sets `query_only=ON`. It never initializes schema or
+changes corpus data. Schema versions, configuration fingerprints, foreign keys,
+and FTS5 availability are checked before scoring. Historical Stage 2 corpora can
+use keyword search, but semantic search requires immutable model metadata/vectors.
+
+Semantic search opens `retrieval_snapshot`, validates vectors, and loads the exact
+stored repository/commit from the local cache once. It compares the reconstructed
+configuration with every stored compatibility field, including tokenizer identity,
+preprocessing/chunker versions, dimensions, normalization, and package versions.
+LF-normalized query text must fit the model token limit. Query vectors pass the
+existing shape/finite/unit-norm validator, then native top-k supplies ordered IDs
+and scores. Passage lookup stays inside the same snapshot. Empty indexed corpora
+skip model loading. No downloads, revision substitutions, or Python ranking fallback
+occur. Read transactions remain open through model loading and scoring.
+
+Keyword search imports neither the transformer adapter nor native retrieval. A
+separate in-memory FTS5 table tokenizes the query with `unicode61`; `fts5vocab`
+extracts distinct normalized terms. Quote each term and OR-connect them, then bind
+the resulting expression as a SQL parameter. Thus punctuation cannot become SQL
+or FTS syntax, and operator words remain literal tokens. No persistent or temporary
+tables are written on the corpus connection. Rank using `bm25(chunks_fts)` ascending,
+then chunk ID ascending, with a bound limit. No searchable terms is a query error;
+valid unmatched queries return no results. Duplicate query terms are deduplicated.
+
+Both modes resolve IDs to document paths, passage text, and source line spans in
+the scoring transaction. Missing metadata, invalid relative paths, inconsistent
+text/positions, or nonfinite scores fail the entire request. The result fields are
+rank, chunk_id, path, text, start_line, end_line, mode, score, and score_type. Scores
+are labeled `cosine_similarity` or `fts5_bm25` and have different scales. No score
+fusion, relevance threshold, or retrieval-quality comparison is implemented.
+
+The CLI returns text or JSON (`query`, `mode`, `top_k`, `results`), with diagnostics
+on stderr. Invalid input, including overlong semantic or punctuation-only keyword
+queries, exits 2; operational errors exit 1; successful/no-match queries exit 0.
+Only `benchmark` remains a placeholder. Existing Ubuntu CI discovers Stage 5 tests
+through the ordinary offline pytest command; new GitHub results remain pending.
 
 ## Experiments and tradeoffs
 
