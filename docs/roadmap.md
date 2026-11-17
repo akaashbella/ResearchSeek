@@ -212,6 +212,40 @@ criterion requiring both macOS and Ubuntu remains open. Stage 5 should add match
 query-model loading, snapshot-consistent passage lookup, semantic/FTS5 search
 services, and text/JSON search CLI output. Benchmarking remains Stage 6 work.
 
+### Ubuntu CI configuration — November 17, 2026
+
+`.github/workflows/ci.yml` runs on pushes to `main` and pull requests targeting
+`main`. Each Ubuntu 24.04 job starts from a clean checkout with Python 3.11 or
+3.12, installs `build-essential`, CMake, and Ninja, then runs:
+
+```sh
+python -m pip install -e ".[dev]"
+python -m pytest -q
+researchseek --help
+```
+
+The editable install builds the native C++17 extension. A separate check verifies
+its compiled-module import, `diagnostic() == 201703`, and SQLite FTS5 support.
+The workflow uses official `actions/checkout@v7.0.1` and
+`actions/setup-python@v7.1.0`, read-only contents permission, no persisted checkout
+credentials, a 25-minute timeout per job, and pip caching keyed by `pyproject.toml`.
+No repository secrets or service containers are required.
+
+`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`, `HF_HUB_DISABLE_TELEMETRY=1`, and
+`DO_NOT_TRACK=1` disable model acquisition and telemetry. PyPI dependency downloads
+remain allowed. The real-model test stays skipped without `--real-model`.
+
+Local validation on macOS Python 3.11: PyYAML parsing, duplicate-key/structure
+checks, Bash syntax for every run step, and embedded Python syntax passed. The
+native/FTS5 check and CLI help also executed successfully. `actionlint` was not
+installed. The offline suite with the CI model environment flags passed:
+294 tests passed, one opt-in test skipped, zero failures.
+
+GitHub execution is pending. Neither Ubuntu matrix job nor Python 3.12 has been
+verified locally. Both jobs must pass in GitHub Actions before recording Ubuntu
+verification or closing the cross-platform exit criteria. No application behavior
+was changed, and Stage 5 has not started.
+
 ## Stage 5 — search CLI and keyword baseline
 
 Dependency: Stages 2–4.
