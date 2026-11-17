@@ -1,7 +1,7 @@
 # Requirements
 
-MVP specification. Stage 3 implements incremental indexing, real embeddings, and
-SQLite/FTS5 persistence. Search and benchmark workflows below remain planned.
+MVP specification. Indexing, embeddings, SQLite/FTS5 persistence, and native exact
+vector retrieval are implemented. Public search and benchmark workflows remain planned.
 
 ## MVP scope
 

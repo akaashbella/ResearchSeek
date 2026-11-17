@@ -3,7 +3,8 @@
 Stage 0 is complete. Stage 1 is implemented and verified on macOS; Ubuntu
 verification is pending. Stage 2 foundations are implemented and verified on macOS.
 Stage 3 is implemented and verified on macOS, including cached real-model indexing.
-Stage 4 has not started and requires approval.
+Stage 4 native retrieval is verified on macOS; its Ubuntu exit criterion remains open.
+Stage 5 has not started and requires approval.
 Later stages depend on the exit criteria listed below.
 
 ## Stage 0 — requirements and design (complete)
@@ -173,6 +174,43 @@ integration and stage completion.
 - Exit: score tolerance and ordered-ID acceptance criteria pass on both platforms;
   selection retains O(k) candidates by code inspection. Report sanitizer availability
   and actual outcomes; no performance improvement claim is required.
+
+### Stage 4 verification — November 17, 2026
+
+Implemented the independent C++ kernel/header, strict NumPy binding, and Python
+`retrieval.py` snapshot adapter. Added independent NumPy reference tests, native
+edge cases, persisted-vector integration tests, and standalone/instrumented safety
+runners. Stage 3 application code, schema, model configuration, and CLI are unchanged.
+
+| Check | Actual result |
+| --- | --- |
+| Toolchain | macOS arm64, Python 3.11.17, NumPy 2.4.6, Apple Clang 21.0.0 (clang-2100.3.34.2), CMake 4.4.5, pybind11 3.1.0, scikit-build-core 0.12.2 |
+| Editable rebuild | `python -m pip install --no-deps -v -e .` succeeded; native diagnostic returned `201703` (C++17). The known nonfatal Ninja/lipo probe warning remains |
+| Native/adapter tests | `python -m pytest tests/test_native_search.py tests/test_retrieval.py -q`: 112 passed |
+| NumPy comparison | Nine seeded normalized fixtures, dimensions 1/7/384: maximum observed absolute score error 3.0531133177191805e-16; ordered IDs matched. Separate fixtures exercise exact and near ties |
+| Ordinary offline suite | `python -m pytest -q`: 294 passed, 1 opt-in real-model test skipped, 0 failed |
+| Complete cached-model suite | `HF_HUB_OFFLINE=1 python -m pytest --real-model -q`: 295 passed, 0 failed; includes all 183 pre-existing cases |
+| Index CLI | Indexed the five samples into a temporary local database: five documents, six chunks. Help and native diagnostic passed |
+| Real vector retrieval | Cached model query against six stored 384-dimensional vectors: native top-5 IDs/scores agreed with NumPy |
+| Snapshot/corruption checks | Writer commit under WAL preserved reader vectors/text; missing, malformed, nonfinite, zero/non-unit vectors, corrupt dimensions/configuration, and orphan IDs were rejected |
+| Standalone sanitizers | Clang C++17 executable with `-fsanitize=address,undefined -fno-omit-frame-pointer` passed kernel safety checks; ASAN_OPTIONS=detect_leaks=0, UBSAN_OPTIONS=halt_on_error=1 |
+| Instrumented extension | Separate wheel with RESEARCHSEEK_SANITIZERS=ON loaded with the Clang ASan runtime preloaded; all 112 native/adapter tests passed without ASan/UBSan findings. Regular installation was preserved |
+| Ubuntu | Not run; compatibility remains unverified |
+
+The first targeted pytest run reported 109 passed/1 failed: the malformed-length
+fixture was blocked by the schema's dimension trigger before reaching retrieval.
+The fixture now deliberately bypasses that trigger to seed corruption. The final
+suite passes. LeakSanitizer and ThreadSanitizer were not run.
+
+Heap inspection confirms at most min(k,N) candidates and no full score sort.
+Selection/output use O(k) storage; duplicate-ID validation uses a separate O(N)
+set, and the Python adapter allocates an O(Nd) matrix. Inputs are borrowed during
+the native call and must not be mutated concurrently. No performance gain is claimed.
+
+Local Stage 4 functionality and safety checks are complete. The formal exit
+criterion requiring both macOS and Ubuntu remains open. Stage 5 should add matching
+query-model loading, snapshot-consistent passage lookup, semantic/FTS5 search
+services, and text/JSON search CLI output. Benchmarking remains Stage 6 work.
 
 ## Stage 5 — search CLI and keyword baseline
 

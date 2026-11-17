@@ -1,8 +1,8 @@
 # Architecture
 
-Stage 3 implements CPU embeddings and transactional incremental indexing through
-the `index` CLI. Discovery, chunking, and SQLite/FTS5 primitives remain separate.
-Retrieval and benchmarking are still planned; the C++ diagnostic is unchanged.
+Stage 4 adds exact native cosine retrieval and a SQLite vector snapshot adapter.
+Stage 3 indexing, discovery, chunking, and persistence remain unchanged. The public
+search service/CLI and benchmarking remain planned; the C++ diagnostic is preserved.
 
 ## Components and data flow
 
@@ -23,6 +23,7 @@ Module responsibilities (search and benchmark modules remain planned):
 | `src/researchseek/embeddings.py` | model loading, identity, batching, normalization |
 | `src/researchseek/storage.py` | schema, transactions, reconciliation, FTS synchronization |
 | `src/researchseek/indexing.py` | complete index/rebuild workflow and counts |
+| `src/researchseek/retrieval.py` | validated SQLite vector snapshots and native ranking |
 | `src/researchseek/search.py` | semantic/keyword search and passage lookup |
 | `src/researchseek/benchmark.py` | experiment execution, metrics, environment and raw results |
 | `cpp/` | cosine kernel, bounded heap, pybind11 binding, CMake target |
@@ -34,8 +35,9 @@ Use the standard library for CLI, SQLite, hashes, and timing. NumPy supports the
 array boundary, vector validation, and reference tests. Packaging uses scikit-build-core
 with pybind11/CMake and a `src/` layout. CMake requires 3.18+ and C++17; the build
 backend supplies CMake/Ninja when needed. The current extension is
-`researchseek._native`, built from `cpp/bindings.cpp`; `diagnostic()` returns the
-compiler's `__cplusplus` value. No similarity code is implemented yet.
+`researchseek._native`, built from `cpp/bindings.cpp` and `cpp/vector_search.cpp`;
+`diagnostic()` returns the compiler's `__cplusplus` value. The binding validates
+NumPy layout; the independent C++ kernel handles cosine scoring and heap selection.
 
 `cli.py` uses argparse, and `__main__.py` supports `python -m researchseek`.
 `diagnostics.py` probes FTS5 using a temporary in-memory table and raises an
@@ -221,30 +223,66 @@ No public keyword query service or ranking command is implemented yet.
 
 ## Native integration and retrieval
 
-Proposed pybind11 API accepts a C-contiguous float32 matrix `(N, d)`, a float32 query
-`(d,)`, int64 chunk IDs `(N,)`, and positive k; returns ordered IDs and scores.
-Python decodes SQLite blobs into a matrix and ID mapping inside one read snapshot,
-then fetches passages from that same snapshot. A new CLI invocation loads a fresh
-snapshot; there is no persistent process cache to invalidate in the MVP.
+`_native.top_k(matrix, query, chunk_ids, k)` accepts native-endian float32 arrays
+`(N, d)` and `(d,)`, native-endian int64 IDs `(N,)`, and a positive integer k.
+Arrays must be C-contiguous and naturally aligned. Wrong dtypes (including swapped
+byte order), lists, noncontiguous arrays, and unaligned buffers are rejected rather
+than converted. Read-only arrays and contiguous views are accepted. k supports
+integer index values, including NumPy integers; booleans/floats are rejected and
+arbitrarily large positive Python integers are clipped to the corpus size.
 
-Both documents and queries are normalized by the embedding adapter. The native
-boundary validates shapes, d>0, finite entries, unique IDs, and nonzero norms;
-compute cosine with explicit norms and double-precision accumulation over float32
-inputs. This retains cosine correctness if normalization has small rounding drift.
-Document all conversion/copy behavior and raise Python exceptions on invalid input.
+Validation checks shapes, d>0, lengths, finite values, nonzero norms, unique IDs,
+and address-size products before pointer arithmetic. Duplicate detection uses an
+unordered set with average O(N) time and O(N) temporary storage. Numeric validation
+scans the inputs while holding the GIL. Only the scoring/selection kernel releases
+it. Array arguments hold their owners alive; no borrowed pointer survives the call.
+Callers must not mutate or resize inputs through any alias during the call.
 
-The kernel scans every row and keeps at most min(k,N) candidates in a min-heap
-whose root is the worst retained candidate: lowest score, then largest chunk ID.
-Final results sort by descending score, then ascending ID. Cost is O(Nd + N log k)
-time and O(k) extra selection memory, in addition to the O(Nd) input matrix.
-Release the GIL during computation after validation; borrowed input arrays remain
-alive and must not be mutated during the call. No threads or native allocations
-outlive the call. Semantic search fails if the extension is unavailable.
-FTS search does not require model loading.
+The C++ kernel scans every vector. It accumulates dot products and squared norms
+in double precision, then divides by explicit norms. Native input vectors need
+not be unit-normalized; stored vectors still follow Stage 3's unit-norm policy.
+No fast-math flags or approximate ranking are used. Tiny and large finite float32
+magnitudes are tested. Invalid values/norms raise ValueError, incorrect types raise
+TypeError, and standard C++ exceptions are translated by pybind11.
 
-NumPy reference tests independently compute float64 cosine and sort, rather than
-copying the heap algorithm. Near-tied scores may reorder across numeric backends.
-The acceptance criteria in requirements.md distinguish these from exact ties.
+The bounded min-heap retains at most min(k,N) candidates. Its comparator puts the
+worst retained result at the root: lowest score, then largest ID. A better candidate
+replaces the root. Only retained candidates are finally sorted by descending score
+and ascending ID. Scoring is O(Nd), selection is O(N log k), and heap/result storage
+is O(k), separately from duplicate-validation storage. There is no full score array
+or full-corpus sort. Empty matrices return no matches after validating the query
+and k; k>N returns all rows, while k<1 is invalid.
+
+The binding allocates independent int64 ID and float64 score output arrays after
+reacquiring the GIL. Inputs are borrowed without copies. The adapter decodes each
+little-endian float32 BLOB through the existing validator and copies it into one
+native-endian contiguous `(N,d)` matrix, plus an `(N,)` ID array in ascending ID
+order. This costs O(Nd) matrix and O(N) ID memory, with an O(d) row-decoding temporary.
+Stored dimensions/type/byte lengths are checked before matrix allocation; missing,
+nonfinite, zero/non-unit vectors, corrupt configuration, and orphan relationships
+are rejected. Empty unconfigured or indexed corpora are supported.
+
+`retrieval_snapshot(storage)` holds a read transaction open while yielding a
+`VectorSnapshot` with configuration, arrays, and `top_k`. Stage 5 can hydrate results
+inside that context from the same snapshot. Tests use a WAL database to verify
+that an intervening writer commit does not change either vectors or passage text
+seen by the reader. `retrieve(storage, query, k)` is a convenience wrapper returning
+ranked `(int, float)` pairs; callers needing metadata must use the context manager.
+Neither API encodes a query string or validates its model identity; the future
+search service must use the snapshot configuration to load a compatible embedder.
+No persistent native index/cache or silent NumPy fallback is implemented.
+
+NumPy tests independently compute float64 cosine and lexicographically sort all
+reference scores. Exact ties use ascending IDs; near ties receive no epsilon or
+rounding in the C++ comparator. Different summation orders can reorder near ties
+across backends. Tests require absolute score error <=1e-5 and matching ordering
+outside that tolerance, with separate exact-tie and near-tie fixtures.
+
+`RESEARCHSEEK_SANITIZERS=ON` instruments the extension with AddressSanitizer and
+UndefinedBehaviorSanitizer under Clang/GCC. A standalone safety executable also
+exercises overflow guards, invalid inputs, and heap boundaries. The test runner
+can load a separate instrumented extension, preserving the regular installation.
+Sanitizer results and platform coverage are recorded in the roadmap.
 
 ## Experiments and tradeoffs
 
@@ -265,6 +303,5 @@ explicit token limits and overlap policy. Strict whole-run rollback simplifies
 integrity at the cost of rejecting a run for one malformed file.
 
 Open choices: additional supported toolchain versions (Ubuntu verification pending),
-binding copy policy and native norm tolerances (Stage 4), and evaluation label
-format/workload sizes (Stage 6). Changes to these
+evaluation label format/workload sizes (Stage 6). Changes to these
 choices must remain consistent with the requirements.

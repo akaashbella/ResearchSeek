@@ -3,9 +3,8 @@
 ResearchSeek is a local-first CLI project for semantic and keyword search over
 research notes. It is an independent software engineering portfolio project.
 
-Status: Stage 3. The `index` command generates transformer embeddings and updates
-a local SQLite corpus incrementally. Semantic retrieval, keyword search commands,
-and benchmarking are not implemented yet.
+Status: Stage 4. Incremental indexing and native exact vector retrieval are
+implemented. Public semantic/keyword search commands and benchmarking remain planned.
 
 Intended MVP features:
 
@@ -129,3 +128,59 @@ LF/CRLF/CR line endings. Tests exercise discovery, chunk positions, persistence,
 replacement, deletion, and rollback. Ordinary tests use a deterministic fake
 embedder and do not load models or access the network.
 See [architecture](docs/architecture.md) for chunking rules and transaction semantics.
+
+## Native retrieval API
+
+`researchseek._native.top_k(matrix, query, chunk_ids, k)` accepts aligned,
+C-contiguous NumPy arrays: native float32 `(N, d)` vectors and `(d,)` query, and
+int64 `(N,)` IDs. It rejects wrong dtypes/layouts, duplicate IDs, nonfinite values,
+zero norms, and incompatible shapes. It never casts or copies input arrays.
+Inputs must remain unchanged throughout the call, including through other aliases.
+
+The result is a pair of owned arrays: int64 IDs and float64 cosine scores. Scores
+use explicit norms and double accumulation, so inputs need not be normalized.
+Results sort by descending score, then ascending ID for exact ties. Positive k
+larger than N returns all rows; an empty matrix returns empty results after input
+validation. Nearly tied results can differ from other numerical implementations;
+the score tolerance is `1e-5`, without rounding scores for ranking.
+
+The C++ scan takes O(Nd + N log k) time. Heap selection and output use O(k) storage;
+duplicate-ID validation separately uses O(N) storage. No complete score array is
+sorted. Validation holds the GIL; the computational kernel releases it while the
+Python array owners remain alive.
+
+For SQLite-backed retrieval, `retrieve(storage, query, k=5)` in
+`researchseek.retrieval` returns `(chunk_id, score)` pairs. It decodes and validates
+stored little-endian vectors in ascending ID order. Use the context manager when
+passages must be fetched from the same read snapshot:
+
+```python
+from researchseek.retrieval import retrieval_snapshot
+from researchseek.storage import Storage
+
+with Storage("researchseek.sqlite3") as storage:
+    with retrieval_snapshot(storage) as snapshot:
+        ranked = snapshot.top_k(query, 5)  # query is a matching float32 embedding
+        # Fetch passage metadata here, before the read transaction closes.
+```
+
+The adapter allocates an O(Nd) vector matrix and O(N) IDs. Query encoding and
+model-compatibility checks belong to the future search service; the snapshot
+exposes corpus configuration for that purpose. There is no native fallback or
+persistent vector cache. Ubuntu verification and performance measurements are pending.
+
+Native tests run with `python -m pytest tests/test_native_search.py tests/test_retrieval.py -q`.
+The CMake option `RESEARCHSEEK_SANITIZERS=ON` enables ASan/UBSan for a separate
+instrumented build. The standalone kernel safety checks can also be run with Clang:
+
+```sh
+mkdir -p .tools
+clang++ -std=c++17 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -Icpp cpp/vector_search.cpp tests/cpp/test_vector_search.cpp -o .tools/native-sanitizer-tests
+ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 .tools/native-sanitizer-tests
+```
+
+On macOS, an instrumented Python extension needs the Clang ASan runtime preloaded.
+`tests/run_native_sanitizers.py EXTENSION_PATH` runs the native/adapter tests against
+that separate extension without replacing the regular installation. See the
+[roadmap](docs/roadmap.md) for the actual sanitizer and regression results.
