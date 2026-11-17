@@ -2,7 +2,8 @@
 
 Stage 0 is complete. Stage 1 is implemented and verified on macOS; Ubuntu
 verification is pending. Stage 2 foundations are implemented and verified on macOS.
-Stage 3 has not started and requires approval.
+Stage 3 is implemented and verified on macOS, including cached real-model indexing.
+Stage 4 has not started and requires approval.
 Later stages depend on the exit criteria listed below.
 
 ## Stage 0 — requirements and design (complete)
@@ -110,6 +111,53 @@ Dependency: Stage 2.
   rebuild, concurrent-edit detection; separate real-model cached/offline smoke test.
 - Exit: initial and incremental indexing work end to end; unchanged documents
   generate no new passage embeddings; all failure cases preserve the prior corpus.
+
+### Stage 3 verification — November 17, 2026
+
+Implemented `embeddings.py`, `indexing.py`, vector storage operations, and the
+functional `index` CLI. Added fake-embedder, vector, indexing, CLI, and opt-in model
+tests. Existing chunking tests and C++ sources are unchanged. Two former index
+placeholder assertions now check functional help and the required directory argument.
+
+The initial model is `sentence-transformers/all-MiniLM-L6-v2`, pinned to commit
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`. Its fast tokenizer has a 256-token
+limit and two special tokens. Defaults remain 200 total tokens and up to 32 content
+tokens of overlap. Model acquisition is opt-in; routine indexing is cache-only.
+
+Preparation now reads/chunks/encodes outside the write transaction. A final source
+check and SQLite `data_version` check protect against detected intervening changes.
+Configuration, replacements, vectors, deletions, and completion validation commit
+together. Preparation holds normalized source text and changed vectors in memory;
+it is not a streaming indexer. A filesystem-wide atomic snapshot is not guaranteed.
+
+| Check | Actual result |
+| --- | --- |
+| Environment | macOS arm64, Python 3.11.17, SQLite 3.53.1 |
+| Editable installation | `pip install -e '.[dev]'` succeeded, including native build; `pip check` found no broken requirements |
+| Installed runtime versions | sentence-transformers 5.7.0, Transformers 4.57.6, tokenizers 0.22.2, PyTorch 2.15.0, NumPy 2.4.6, huggingface-hub 0.36.2 |
+| Ordinary offline suite | `python -m pytest -q`: 182 passed, 1 opt-in model test skipped, 0 failed |
+| Existing Stage 2 test files | 109 passed; only the two obsolete index-placeholder expectations changed |
+| Cached real-model suite | `HF_HUB_OFFLINE=1 python -m pytest --real-model -q`: 183 passed, 0 failed |
+| Initial sample CLI index | Five documents, six chunks, six 384-dimensional vectors |
+| Unchanged CLI index | Five unchanged documents, no additions/updates/deletions; fake and real encoder guards confirm zero new passage embeddings |
+| Modified/deleted sample copies | One updated, one deleted, three unchanged; four documents/five chunks remained |
+| Index/rebuild failure | Malformed UTF-8 returned exit 1; prior configuration, documents, chunks, and vectors unchanged |
+| Successful rebuild | Replaced all four remaining documents; complete vector/chunk relationships validated |
+| Vector checks | Little-endian float32 serialization, shape/dimension checks, finite/unit-norm checks, and cascades passed; real stored norms ranged from 0.99999994 to 1.0 |
+| Injected failures | Encoding, vector validation, database writes/commit, rebuild, source changes, and intervening database commits rejected without partial index updates |
+| CLI/native | Root/index help worked; native diagnostic returned `201703`; operational errors returned 1 and invalid usage returned 2 |
+| Ubuntu | Not run; compatibility remains unverified |
+
+The real model was explicitly provisioned into the ignored project cache before
+offline verification. No artifacts, local databases, or model weights are tracked.
+Dependency bounds are in `pyproject.toml`; the recorded versions are this run's
+environment, not a lockfile. Model/revision/tokenizer/chunker/root/package changes
+require an explicit rebuild, including conversion from Stage 2-only corpora.
+
+Stage 3's functional exit criteria are satisfied locally. Retrieval, public keyword
+search, and benchmarking remain unimplemented. Stage 4 should add the C++ cosine
+kernel and bounded top-k heap, validate the pybind11 array boundary, and compare
+scores/ordered results with the NumPy reference before integrating retrieval.
 
 ## Stage 4 — exact C++ cosine and bounded top-k
 

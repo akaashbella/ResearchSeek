@@ -1,9 +1,8 @@
 # Architecture
 
-Stage 2 implements document discovery/reading, chunking, SQLite persistence, and
-FTS5 synchronization. Stage 1's package, CLI placeholders, and native diagnostic
-are unchanged. The complete indexing workflow, model adapter, retrieval, and
-benchmarking remain planned.
+Stage 3 implements CPU embeddings and transactional incremental indexing through
+the `index` CLI. Discovery, chunking, and SQLite/FTS5 primitives remain separate.
+Retrieval and benchmarking are still planned; the C++ diagnostic is unchanged.
 
 ## Components and data flow
 
@@ -14,7 +13,7 @@ search keyword:  CLI -> literal FTS query -> FTS5 BM25 -> fetch passages
 benchmark: fixtures/labels -> shared indexing/search services -> JSON measurements
 ```
 
-Module responsibilities (embedding, indexing, search, and benchmark modules remain planned):
+Module responsibilities (search and benchmark modules remain planned):
 
 | Location | Responsibility |
 | --- | --- |
@@ -32,7 +31,7 @@ Module responsibilities (embedding, indexing, search, and benchmark modules rema
 Services accept an embedder interface so deterministic fakes can exercise the
 pipeline without model downloads. CLI code does not contain retrieval logic.
 Use the standard library for CLI, SQLite, hashes, and timing. NumPy supports the
-array boundary and reference tests in later stages. Packaging uses scikit-build-core
+array boundary, vector validation, and reference tests. Packaging uses scikit-build-core
 with pybind11/CMake and a `src/` layout. CMake requires 3.18+ and C++17; the build
 backend supplies CMake/Ninja when needed. The current extension is
 `researchseek._native`, built from `cpp/bindings.cpp`; `diagnostic()` returns the
@@ -40,8 +39,8 @@ compiler's `__cplusplus` value. No similarity code is implemented yet.
 
 `cli.py` uses argparse, and `__main__.py` supports `python -m researchseek`.
 `diagnostics.py` probes FTS5 using a temporary in-memory table and raises an
-actionable error if unavailable. The package currently has no runtime dependencies;
-pytest is a development extra. Build dependency bounds and test settings live in
+actionable error if unavailable. Runtime dependencies are NumPy, sentence-transformers,
+and huggingface-hub; pytest is a development extra. Dependency bounds and test settings live in
 `pyproject.toml`. No automatic native rebuild occurs after C++ edits.
 
 ## Index lifecycle and consistency
@@ -52,21 +51,27 @@ chunking and source spans; hashes describe raw bytes, so line-ending changes sti
 trigger replacement. Record byte size and mtime_ns for diagnostics; use hashes to
 detect content changes. Reject symlink roots and symlink descendants.
 
-Start a single write transaction for database reconciliation. Compare hashes and
-configuration, retain unchanged records, and batch changed-document embeddings.
-Delete old chunks and insert replacements within the same transaction. Reconcile
-missing paths only after complete discovery/read success. Commit once all work
-succeeds; roll back on any failure, including a rebuild. Large transactions and
-longer write locks are an accepted MVP tradeoff. Support one writer; use SQLite
-locking and a bounded busy timeout. Concurrent indexing is outside the MVP.
+`index_corpus` reads configuration/hashes in a short read transaction and captures
+SQLite `data_version`. It reads every source, compares hashes, and chunks/encodes
+only changed or new files. Changed passages are encoded in batches (default 32).
+Preparation retains normalized documents and changed vectors in memory. It runs
+outside the write transaction to avoid holding a writer lock during model work.
+
+After preparation, repeat discovery and reread files to reject detected source
+changes. Acquire `BEGIN IMMEDIATE` and recheck `data_version`; if another connection
+committed during preparation, abort and require a retry. Then configure/rebuild,
+replace changed documents/chunks/vectors, reconcile deletions, validate completeness,
+mark the successful index time, and commit once. Any escaping failure, including a
+commit failure, rolls back all corpus mutations. One writer is supported with a
+five-second busy timeout. This replaces Stage 2's proposed longer write transaction.
 
 A database represents files successfully read during a run, not an atomic filesystem
 snapshot. Detect ordinary concurrent edits using file stats before/after reads and
 abort when detected; an additional run reconciles later changes. No watcher or
 filesystem snapshot guarantee is planned.
 
-Stage 2 exposes `discover_documents` and `read_document` separately; it does not
-orchestrate an indexing run. Discovery returns absolute paths sorted by their
+`discover_documents` and `read_document` remain independently usable. Discovery
+returns absolute paths sorted by their
 root-relative POSIX strings. Database exclusion requires passing `database_path`;
 it excludes that file and its `-wal`, `-shm`, and `-journal` sidecars. Read failures
 raise `DocumentError` with path/context. Reads compare device, inode, byte size,
@@ -103,8 +108,37 @@ ordinary edits/replacements, not every possible filesystem race.
 `WhitespaceTokenizer` is an offline stub: each `\S+` match is one content token,
 with two simulated special tokens and a 256-token limit. Defaults therefore allow
 198 content tokens per window. It does not model transformer tokenization; Stage 3
-must supply the real tokenizer and rebuild incompatible corpora. Configuration
-persists these settings, tokenizer identity, and preprocessing/chunker versions.
+now supplies the real tokenizer and requires rebuilding incompatible corpora.
+Configuration persists these settings, tokenizer identity, and preprocessing/chunker versions.
+
+`ModelTokenizer` adapts the fast tokenizer loaded from the model snapshot. It uses
+untruncated, non-special-token offsets for splitting and recounts each source slice
+with special tokens included. Its identity includes the repository/commit and a
+SHA-256 of the serialized tokenizer backend. For MiniLM, the effective model limit
+is 256 tokens with two special tokens; the configured 200-token default leaves
+198 content tokens. The existing chunking algorithm and source-position rules are
+unchanged. Each passage is checked again before encoding to prevent silent truncation.
+
+### Embedding adapter and artifacts
+
+`SentenceTransformerEmbedder` uses sentence-transformers on CPU. The initial model
+is `sentence-transformers/all-MiniLM-L6-v2`, with pinned default commit
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41` and dimension 384. Explicitly selected
+tags/branches resolve through the Hugging Face snapshot cache to a 40-character
+commit SHA; only that immutable revision is persisted. Normal indexing is
+cache-only. `--download-model` permits acquisition, and `--cache-dir` selects the
+cache (default `.tools/model-cache`). Only the default model has been verified.
+
+The adapter loads the resolved snapshot locally with remote code disabled, uses
+no query/passage prefix, and shares one `encode` method for passages and future
+queries. It validates shapes and finite/nonzero norms, normalizes with float64
+accumulation, and returns contiguous float32 vectors. Storage requires unit norms
+within absolute tolerance `1e-5`. Relevant versions include sentence-transformers,
+Transformers, tokenizers, PyTorch, NumPy, and huggingface-hub. They participate in
+the configuration fingerprint; dependency upgrades can require rebuilding.
+
+Ordinary tests use a deterministic fake embedder. The separate `real_model` test
+requires `--real-model` and a provisioned local cache; it does not download files.
 
 ## Storage design
 
@@ -134,13 +168,13 @@ columns. All configuration fields must match when reopening for writes, not just
 the embedding dimension. `configure(..., rebuild=True)` explicitly clears corpus
 records and replaces the configuration inside the caller's transaction.
 
-Model ID, immutable revision, and dimension are unset together during Stage 2.
-The embeddings table is intentionally empty; document/chunk persistence is tested
-independently. Stage 3 must enforce exactly one finite, nonzero L2-normalized vector
-per chunk before committing a complete indexing run. The reserved table already
+Stage 2 databases may have no model metadata or embeddings and require an explicit
+rebuild before full indexing. The standalone metadata/chunk API remains usable
+without vectors for those tests. Successful Stage 3 indexing enforces exactly one
+finite, nonzero L2-normalized vector per chunk before committing. The table
 checks BLOB storage/float32 byte alignment and uses insert/update triggers to
-require the configured dimension. Finite values and norms still require Python
-validation in Stage 3; SQLite does not validate float contents.
+require the configured dimension. Python validates finite values and norms;
+SQLite does not validate float contents.
 
 Store vectors as explicitly little-endian contiguous float32 bytes; dimension comes
 from the singleton configuration. Enforce byte length `4 * dimension`, finite
@@ -171,7 +205,14 @@ All write operations require `with storage.transaction():`, which uses
 mutator uses a savepoint so a failed replacement cannot leave half its chunks
 inserted even if the caller handles the error. If the error propagates, the outer
 transaction rolls back all operations. Nested corpus transactions are rejected.
-Stage 3 must let indexing failures propagate to preserve whole-run rollback.
+Indexing lets failures propagate to preserve whole-run rollback. Read snapshots
+use `transaction(write=False)` without acquiring a writer lock.
+
+`put_embeddings` validates dimensions, row counts, finite values, and unit norms
+before storing little-endian float32 BLOBs by chunk ID. `embeddings` deserializes
+and validates them. `finish_index` rejects missing vectors or foreign-key errors,
+validates stored vectors, and updates `last_indexed_at`. Chunk IDs are unique
+embedding keys; replacement/deletion cascades remove old vectors and FTS entries.
 
 Insert/update/delete triggers keep the external-content FTS5 index synchronized
 with chunks, including foreign-key cascades. Tests query `MATCH` after replacement,
@@ -224,6 +265,6 @@ explicit token limits and overlap policy. Strict whole-run rollback simplifies
 integrity at the cost of rejecting a run for one malformed file.
 
 Open choices: additional supported toolchain versions (Ubuntu verification pending),
-resolved model revision and cache/offline CLI options (Stage 3), binding copy policy
-and norm tolerances (Stage 4), and evaluation label format/workload sizes (Stage 6). Changes to these
+binding copy policy and native norm tolerances (Stage 4), and evaluation label
+format/workload sizes (Stage 6). Changes to these
 choices must remain consistent with the requirements.

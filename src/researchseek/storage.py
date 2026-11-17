@@ -9,6 +9,10 @@ from pathlib import Path, PurePosixPath
 import re
 import sqlite3
 from collections.abc import Iterable, Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 from researchseek.chunking import CHUNKER_VERSION, Chunk
 from researchseek.documents import Document
@@ -156,10 +160,10 @@ class Storage:
         self.close()
 
     @contextmanager
-    def transaction(self) -> Iterator["Storage"]:
+    def transaction(self, *, write: bool = True) -> Iterator["Storage"]:
         if self.connection.in_transaction:
             raise RuntimeError("Nested corpus transactions are not supported")
-        self.connection.execute("BEGIN IMMEDIATE")
+        self.connection.execute("BEGIN IMMEDIATE" if write else "BEGIN")
         try:
             yield self
             self.connection.commit()
@@ -295,3 +299,50 @@ class Storage:
             missing = [row["path"] for row in self.documents() if row["path"] not in present]
             self.connection.executemany("DELETE FROM documents WHERE path = ?", [(path,) for path in missing])
             return len(missing)
+
+    def data_version(self) -> int:
+        """Detect commits by other connections while indexing is prepared."""
+        return self.connection.execute("PRAGMA data_version").fetchone()[0]
+
+    def put_embeddings(self, chunk_ids: Iterable[int], vectors: object) -> None:
+        from researchseek.embeddings import validate_embeddings, vector_to_blob
+
+        identifiers = list(chunk_ids)
+        config = self.configuration()
+        if config is None or config.dimension is None:
+            raise ValueError("An embedding configuration is required")
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Duplicate chunk IDs in embedding batch")
+        matrix = validate_embeddings(vectors, config.dimension, rows=len(identifiers))
+        with self._write():
+            self.connection.executemany(
+                "INSERT INTO embeddings(chunk_id, vector) VALUES (?, ?) "
+                "ON CONFLICT(chunk_id) DO UPDATE SET vector=excluded.vector",
+                [(identifier, vector_to_blob(vector, config.dimension))
+                 for identifier, vector in zip(identifiers, matrix)],
+            )
+
+    def embeddings(self) -> dict[int, "np.ndarray"]:
+        from researchseek.embeddings import vector_from_blob
+
+        config = self.configuration()
+        if config is None or config.dimension is None:
+            raise ValueError("An embedding configuration is required")
+        return {row["chunk_id"]: vector_from_blob(row["vector"], config.dimension)
+                for row in self.connection.execute("SELECT * FROM embeddings ORDER BY chunk_id")}
+
+    def finish_index(self) -> None:
+        """Validate a complete corpus before marking the run successful."""
+        with self._write():
+            if self.connection.execute(
+                "SELECT 1 FROM chunks LEFT JOIN embeddings ON chunks.id=embeddings.chunk_id "
+                "WHERE embeddings.chunk_id IS NULL LIMIT 1"
+            ).fetchone():
+                raise ValueError("Indexed chunks are missing embeddings; rebuild required")
+            if self.connection.execute("PRAGMA foreign_key_check").fetchone():
+                raise ValueError("Database foreign key integrity check failed")
+            self.embeddings()
+            self.connection.execute(
+                "UPDATE corpus_config SET last_indexed_at = ? WHERE id = 1",
+                (datetime.now(timezone.utc).isoformat(),),
+            )

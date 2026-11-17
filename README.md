@@ -3,9 +3,9 @@
 ResearchSeek is a local-first CLI project for semantic and keyword search over
 research notes. It is an independent software engineering portfolio project.
 
-Status: Stage 2 foundations. Document discovery, normalized reads, deterministic
-chunking, and transactional SQLite/FTS5 storage are implemented as Python APIs.
-The CLI remains a scaffold; indexing, retrieval, and benchmarking are not implemented.
+Status: Stage 3. The `index` command generates transformer embeddings and updates
+a local SQLite corpus incrementally. Semantic retrieval, keyword search commands,
+and benchmarking are not implemented yet.
 
 Intended MVP features:
 
@@ -49,20 +49,65 @@ python -c 'from researchseek.diagnostics import check_fts5; check_fts5()'
 The editable install compiles the extension through scikit-build-core, CMake,
 and pybind11. Build isolation downloads CMake and Ninja if needed; the first
 install requires network access unless dependencies are already cached/provided.
-There are no runtime dependencies yet. The `dev` extra installs pytest.
+Runtime dependencies are NumPy, sentence-transformers, and huggingface-hub;
+sentence-transformers installs PyTorch and Transformers. The `dev` extra installs pytest.
 
 Python edits are available immediately. After C++ or build-configuration changes,
 rerun `python -m pip install -e '.[dev]'` to rebuild the extension. The diagnostic
 should print `201703` (C++17). Tests run offline and require no embedding model.
 
-The `index`, `search`, and `benchmark` commands currently provide help and return
-exit code 1 when invoked without `--help`, explaining that they are not implemented.
-Invalid CLI usage returns 2. The full command examples in the requirements are
-for later stages.
+`search` and `benchmark` remain placeholders and return exit code 1. Invalid CLI
+usage returns 2; operational errors return 1; successful indexing returns 0.
 
-Verified on macOS arm64 with Python 3.11.17 and SQLite 3.53.1: all 109 tests passed,
-including the 17 Stage 1 tests. The existing C++ diagnostic still works. Ubuntu has
-not been tested. See the [roadmap](docs/roadmap.md) for verification details.
+Verified on macOS arm64 with Python 3.11.17 and SQLite 3.53.1. Offline tests and a
+separate cached real-model smoke test passed. The existing C++ diagnostic still
+works. Ubuntu has not been tested. See the [roadmap](docs/roadmap.md) for results.
+
+## Indexing
+
+Run these commands from the repository root after installation. Model acquisition
+is explicit; the first command permits a download into the ignored local cache.
+Subsequent commands use cached artifacts without requesting network access.
+
+```sh
+researchseek index ./samples --download-model
+researchseek index ./samples
+researchseek index ./samples --db ./researchseek.sqlite3 --json
+researchseek index ./samples --db ./researchseek.sqlite3 --rebuild
+```
+
+The default model is `sentence-transformers/all-MiniLM-L6-v2`, pinned initially to
+commit `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`. It produces 384-dimensional
+CPU embeddings. `--revision` can select a commit/tag; the resolved commit is stored
+and reused on later runs. `--cache-dir` defaults to `.tools/model-cache`. An empty
+or incomplete cache produces a provisioning error; it never triggers an implicit
+download. To transfer a cache, preserve its Hugging Face directory structure and
+symlinks. Cached license/model-card files remain with the model artifacts.
+
+Chunks default to 200 tokens including the two model special tokens and up to 32
+content tokens of overlap. The actual fast tokenizer supplies WordPiece offsets
+and exact token counts; oversized documents are split before encoding, without
+truncation. `--max-tokens`, `--overlap`, and `--batch-size` configure indexing.
+Encoded vectors are normalized to unit L2 norm and stored as little-endian float32.
+
+Indexing reports added, updated, unchanged, and deleted documents, total documents
+and chunks, and elapsed seconds (including model load for the CLI). Unchanged
+documents retain chunk IDs and generate no passage embeddings. A rename is a
+deletion plus insertion. Rebuild reports all previous documents deleted and all
+replacement documents added.
+
+The database records the resolved root, model/revision/dimension, tokenizer,
+chunker/preprocessing configuration, normalization, and package versions. Changes
+require `--rebuild`; equal dimensions alone do not establish compatibility.
+Stage 2 databases with no model metadata also require rebuilding. Preparation
+happens before the write transaction; a failed scan, encoding, validation, or commit
+preserves the previous corpus, including during rebuilds.
+
+To run the opt-in model test after provisioning (it never downloads artifacts):
+
+```sh
+HF_HUB_OFFLINE=1 python -m pytest --real-model tests/test_real_model.py -q
+```
 
 ## Document and storage APIs
 
@@ -73,13 +118,14 @@ not been tested. See the [roadmap](docs/roadmap.md) for verification details.
   raise an error.
 - `chunk_text(text, tokenizer, config)` returns source slices with character and
   line positions. Defaults are 200 tokens including special tokens and up to 32
-  content tokens of overlap. The offline whitespace tokenizer is a stub; a real
-  transformer tokenizer will replace it in Stage 3.
-- `Storage` holds corpus configuration, document metadata, chunks, a reserved
+  content tokens of overlap. Indexing uses the actual model tokenizer; the offline
+  whitespace tokenizer remains available for deterministic unit tests.
+- `Storage` holds corpus configuration, document metadata, chunks, an
   embeddings table, and a trigger-maintained FTS5 index. Configure and modify it
   inside `with storage.transaction():`; an escaping exception rolls back the run.
 
 The five notes under `samples/` cover nested paths, Unicode, long passages, and
 LF/CRLF/CR line endings. Tests exercise discovery, chunk positions, persistence,
-replacement, deletion, and rollback. No model is loaded or embeddings generated.
+replacement, deletion, and rollback. Ordinary tests use a deterministic fake
+embedder and do not load models or access the network.
 See [architecture](docs/architecture.md) for chunking rules and transaction semantics.

@@ -1,8 +1,7 @@
 # Requirements
 
-MVP specification. Stage 2 provides discovery, chunking, and SQLite/FTS5 storage
-primitives in addition to Stage 1 diagnostics and CLI help. The complete indexing,
-search, and benchmark workflows below are not implemented or measured yet.
+MVP specification. Stage 3 implements incremental indexing, real embeddings, and
+SQLite/FTS5 persistence. Search and benchmark workflows below remain planned.
 
 ## MVP scope
 
@@ -93,7 +92,8 @@ researchseek benchmark --db ./researchseek.sqlite3 --queries ./benchmarks/querie
 
 Semantic search is the default mode and top-k defaults to 5. `--rebuild` explicitly
 replaces the corpus/configuration atomically; changing roots also requires it.
-Chunking options will be finalized in Stage 2 and model selection options in Stage 3.
+Indexing supports `--max-tokens` (200), `--overlap` (32), `--batch-size` (32),
+`--model`, `--revision`, `--cache-dir`, and opt-in acquisition via `--download-model`.
 No-match search is successful with an empty result set. Normal success exits 0, operational
 failure exits 1, and invalid CLI usage exits 2. A benchmark output path must not
 silently overwrite an existing report.

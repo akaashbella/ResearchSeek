@@ -33,7 +33,8 @@ def test_command_help(command, capsys):
     with pytest.raises(SystemExit) as error:
         main([command, "--help"])
     assert error.value.code == 0
-    assert "Not implemented yet" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert ("--download-model" if command == "index" else "Not implemented yet") in output
 
 
 @pytest.mark.parametrize("arguments", [[], ["unknown"], ["--unknown"], ["index", "--unknown"]])
@@ -45,7 +46,13 @@ def test_invalid_usage(arguments, capsys):
 
 
 @pytest.mark.parametrize("command", ["index", "search", "benchmark"])
-def test_placeholder_command(command, capsys):
+def test_command_without_arguments(command, capsys):
+    if command == "index":
+        with pytest.raises(SystemExit) as error:
+            main([command])
+        assert error.value.code == 2
+        assert "directory" in capsys.readouterr().err
+        return
     assert main([command]) == 1
     output = capsys.readouterr()
     assert "not implemented yet" in output.err
