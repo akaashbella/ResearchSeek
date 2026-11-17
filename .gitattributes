@@ -1,0 +1,3 @@
+# Preserve intentional line endings in these sample notes.
+samples/unicode.TXT -text
+samples/systems/line-endings.txt -text

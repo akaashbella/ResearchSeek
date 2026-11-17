@@ -1,7 +1,8 @@
 # Roadmap
 
 Stage 0 is complete. Stage 1 is implemented and verified on macOS; Ubuntu
-verification is pending. Stage 2 has not started and requires approval.
+verification is pending. Stage 2 foundations are implemented and verified on macOS.
+Stage 3 has not started and requires approval.
 Later stages depend on the exit criteria listed below.
 
 ## Stage 0 — requirements and design (complete)
@@ -58,17 +59,43 @@ in `pyproject.toml`; the versions above record this run, not a locked environmen
 
 ## Stage 2 — documents, chunks, and SQLite
 
-Dependency: Stage 1.
+Dependency: Stage 1's local foundation (implemented); Ubuntu verification remains open.
 
 - Tasks: create realistic sample notes; implement discovery, decoding, hashing,
   deterministic chunking, schema/version checks, FTS triggers, transactions, and
   reconciliation primitives. Finalize tokenizer-aware chunk contract and defaults.
-  Use a tokenizer stub and deterministic embedder fixtures until Stage 3.
+  Use an offline tokenizer stub; add deterministic embedder fixtures in Stage 3.
 - Tests: nested/Unicode paths, symlink exclusions, empty files/root, LF/CRLF,
   malformed UTF-8, long passages, overlap/spans, hash changes with equal timestamps,
   schema validation, foreign keys, FTS synchronization, cascade delete, rollback.
 - Exit: repeatable chunks and valid source spans; add/update/skip/delete storage
   scenarios and injected failures satisfy requirements without a downloaded model.
+
+### Stage 2 verification — October 18, 2026
+
+Implemented `documents.py`, `chunking.py`, and `storage.py`, five sample notes,
+and four test modules. `.gitattributes` preserves the CRLF/CR sample bytes.
+Default chunks allow 200 total tokens and up to 32 content
+tokens of overlap, using the offline whitespace tokenizer. The database schema
+is version 1; embeddings are reserved but not generated in this stage.
+
+| Check | Actual result |
+| --- | --- |
+| Environment | macOS arm64, Python 3.11.17, SQLite 3.53.1, existing editable installation |
+| Complete offline suite | `.venv/bin/python -m pytest -q`: 109 passed, 0 failed; includes all 17 unchanged Stage 1 tests |
+| Discovery/reads | Supported extensions, Unicode/nested paths, symlink exclusions, empty/missing roots, invalid UTF-8, raw-byte hashes, equal timestamps with changed content, injected read changes/replacement, and scan failures passed |
+| Chunking | Determinism, paragraph boundaries, token limits, overlap, long passages, whitespace preservation, source offsets/lines, and invalid tokenizer/configuration checks passed |
+| SQLite | Schema creation/reopen, schema rollback/rejection, configuration checks, foreign keys, uniqueness, stable unchanged records, replacement, reconciliation, and empty-document persistence passed |
+| FTS5/rollback | MATCH queries confirmed insert/update/delete, cascades, operation savepoints, whole-run rollback, failed rebuild, and synthetic embedding cascade/rollback behavior |
+| Sample round-trip | Five copied sample files discovered/read/chunked and persisted in a temporary database; stored text/hashes and source spans checked |
+| Native/CLI | `_native.diagnostic()` returned `201703`; `researchseek --help` returned 0 |
+| Rebuild | Not needed: only Python modules, tests, sample notes, and docs changed; existing editable/native installation used |
+| Ubuntu | Not run; compatibility remains unverified |
+
+Stage 2's functional exit criteria are satisfied locally. No model was downloaded
+or loaded, and no runtime dependencies were added. The tokenizer remains a stub,
+embeddings may be absent, and callers must supply completed-scan information and
+manage the full indexing transaction. Public CLI commands remain placeholders.
 
 ## Stage 3 — embeddings and incremental indexing
 

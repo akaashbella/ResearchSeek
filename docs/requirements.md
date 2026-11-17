@@ -1,7 +1,8 @@
 # Requirements
 
-MVP specification. Stage 1 provides package/build diagnostics and CLI help.
-Indexing, search, and benchmark behavior below is not implemented or measured yet.
+MVP specification. Stage 2 provides discovery, chunking, and SQLite/FTS5 storage
+primitives in addition to Stage 1 diagnostics and CLI help. The complete indexing,
+search, and benchmark workflows below are not implemented or measured yet.
 
 ## MVP scope
 

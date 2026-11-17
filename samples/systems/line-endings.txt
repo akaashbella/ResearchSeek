@@ -1,0 +1,1 @@
+Legacy noteA process may fail before commit.Rollback preserves the previous database state.
